@@ -42,16 +42,17 @@ export async function POST(req: NextRequest) {
     const sharp = (await import("sharp")).default;
     buffer = await sharp(buffer).resize({ width: 300 }).toBuffer();
 
+    // @ts-ignore - no type definitions for color-thief-node
     const { getPalette } = await import("color-thief-node");
-    const palette = await getPalette(buffer, 6);
-    let colors = palette.map((rgb) => rgbToHex(rgb[0], rgb[1], rgb[2]));
+    const palette = (await getPalette(buffer, 6)) as number[][];
+    let colors = palette.map((rgb: number[]) => rgbToHex(rgb[0], rgb[1], rgb[2]));
 
     colors = colors
-      .filter((c) => {
+      .filter((c: string) => {
         const l = brightness(hexToRgb(c));
         return l > 40 && l < 220;
       })
-      .filter((c, idx, arr) => arr.indexOf(c) === idx)
+      .filter((c: string, idx: number, arr: string[]) => arr.indexOf(c) === idx)
       .slice(0, 4);
 
     return NextResponse.json({ success: true, colors });
