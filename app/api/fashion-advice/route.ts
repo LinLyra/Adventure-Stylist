@@ -1,175 +1,157 @@
 import { NextRequest, NextResponse } from "next/server";
+import OpenAI from "openai";
 
-/**
- * Deterministic mock recommender for demo.
- * Keeps your existing color-extraction API intact.
- * Input: { destination, seasonStyle, activity, style, wardrobeItems, extractedColors }
- * Output: fixed yet believable guide per destination.
- */
+export const runtime = "nodejs";
 
-type WardrobeItem = {
+export type WardrobeItem = {
+  id: string;
+  type: "top" | "bottom" | "outerwear" | "footwear" | "accessory" | "hat" | "swimwear";
   name: string;
-  type: "top" | "bottom" | "shoes" | "outer" | "accessory";
-  colorHex?: string;
-  tags?: string[];
+  colors: string[];
+  features?: string[];
 };
 
-function pickByKeyword(
-  items: WardrobeItem[] | undefined,
-  keyword: string,
-  fallback: WardrobeItem
-): WardrobeItem {
-  if (!items || items.length === 0) return fallback;
-  const hit =
-    items.find((i) => i.name.toLowerCase().includes(keyword)) ||
-    items.find((i) => (i.tags || []).some((t) => t.toLowerCase().includes(keyword)));
-  return hit || fallback;
+export type FashionAdviceInput = {
+  wardrobe: WardrobeItem[];
+  destination: { name: string; lat?: number; lon?: number };
+  activity: "beach" | "hiking" | "city" | "adventure" | "wildlife" | "photo";
+  season?: "summer" | "autumn" | "winter" | "spring";
+  palette?: string[];
+  weather?: { tempC: number; condition: string; uv?: number; windKph?: number };
+};
+
+type GuideItem = WardrobeItem & { why: string };
+
+type Guide = {
+  items: GuideItem[];
+  palette: string[];
+  notes: string[];
+};
+
+const activityNeeds: Record<
+  FashionAdviceInput["activity"],
+  { types: WardrobeItem["type"][]; note: string }
+> = {
+  beach: {
+    types: ["swimwear", "top", "bottom", "footwear", "hat", "accessory"],
+    note: "Sun protection and quick-dry fabrics help at the beach",
+  },
+  hiking: {
+    types: ["top", "bottom", "footwear", "outerwear", "hat", "accessory"],
+    note: "Supportive footwear and layers for changing trail weather",
+  },
+  city: {
+    types: ["top", "bottom", "footwear", "outerwear", "accessory"],
+    note: "Comfortable layers for urban exploration",
+  },
+  adventure: {
+    types: ["top", "bottom", "footwear", "outerwear", "accessory", "hat"],
+    note: "Durable gear for action-packed activities",
+  },
+  wildlife: {
+    types: ["top", "bottom", "footwear", "outerwear", "hat", "accessory"],
+    note: "Earthy tones blend with environment and protect from insects",
+  },
+  photo: {
+    types: ["top", "bottom", "footwear", "outerwear", "accessory", "hat"],
+    note: "Functional pockets and neutral tones keep focus on scenery",
+  },
+};
+
+function hexToRgb(hex: string) {
+  const v = parseInt(hex.replace("#", ""), 16);
+  return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
 }
 
-function fallbackWardrobe(): WardrobeItem[] {
-  return [
-    { name: "White T-Shirt", type: "top", tags: ["lightweight"] },
-    { name: "Khaki Cargo Shorts", type: "bottom", tags: ["durable"] },
-    { name: "Blue Jeans", type: "bottom", tags: ["durable"] },
-    { name: "Brown Hiking Boots", type: "shoes", tags: ["grip", "waterproof"] },
-    { name: "Sun Hat", type: "accessory", tags: ["uv"] },
-    { name: "Windbreaker Jacket", type: "outer", tags: ["windproof", "light-jacket"] },
-  ];
+function colorDistance(a: string, b: string) {
+  const ra = hexToRgb(a);
+  const rb = hexToRgb(b);
+  return Math.sqrt(
+    Math.pow(ra.r - rb.r, 2) + Math.pow(ra.g - rb.g, 2) + Math.pow(ra.b - rb.b, 2)
+  );
 }
 
-function guideForBlueMountains(
-  wardrobe: WardrobeItem[],
-  extractedColors?: string[]
-) {
-  const items = [
-    pickByKeyword(wardrobe, "t-shirt", { name: "White T-Shirt", type: "top" }),
-    pickByKeyword(wardrobe, "cargo", { name: "Khaki Cargo Shorts", type: "bottom" }),
-    pickByKeyword(wardrobe, "boots", { name: "Brown Hiking Boots", type: "shoes" }),
-    pickByKeyword(wardrobe, "hat", { name: "Sun Hat", type: "accessory" }),
-    pickByKeyword(wardrobe, "wind", { name: "Windbreaker Jacket", type: "outer" }), // optional layer
-  ];
-
-  return {
-    palette: extractedColors?.length
-      ? extractedColors.slice(0, 5)
-      : ["#2E8B57", "#DDA15E", "#87CEEB", "#8B4513"], // eucalyptus, sandstone, sky, earth
-    items,
-    why:
-      "High UV on the plateau — add sun protection. Trail terrain favors durable bottoms and grippy boots. " +
-      "Breeze along lookouts — bring a light windproof layer. Palette echoes eucalyptus greens and sandstone cliffs.",
-  };
+function pickByType(
+  items: WardrobeItem[],
+  type: WardrobeItem["type"],
+  palette?: string[]
+): WardrobeItem | undefined {
+  const candidates = items.filter((w) => w.type === type);
+  if (!candidates.length) return undefined;
+  if (!palette || palette.length === 0) return candidates[0];
+  const main = palette[0];
+  return candidates.reduce((best, cur) => {
+    const bestDist = Math.min(...best.colors.map((c) => colorDistance(c, main)));
+    const curDist = Math.min(...cur.colors.map((c) => colorDistance(c, main)));
+    return curDist < bestDist ? cur : best;
+  });
 }
 
-function guideForSydneyHarbour(
-  wardrobe: WardrobeItem[],
-  extractedColors?: string[]
-) {
-  const items = [
-    pickByKeyword(wardrobe, "t-shirt", { name: "White T-Shirt", type: "top" }),
-    pickByKeyword(wardrobe, "jeans", { name: "Blue Jeans", type: "bottom" }),
-    pickByKeyword(wardrobe, "boots", { name: "Brown Hiking Boots", type: "shoes" }), // treat as comfy walkers
-    pickByKeyword(wardrobe, "hat", { name: "Sun Hat", type: "accessory" }),
-  ];
-
-  return {
-    palette: extractedColors?.length
-      ? extractedColors.slice(0, 5)
-      : ["#1F4C73", "#E6B800", "#9EC6D8"], // harbour blue, sunset gold, sea mist
-    items,
-    why:
-      "Sunny harbour with a light sea breeze — choose breathable top and a hat for UV. " +
-      "Blues and neutrals echo the harbour water and sunset tones; comfortable shoes for long walks by the quay.",
-  };
-}
-
-function guideForGreatOceanRoad(
-  wardrobe: WardrobeItem[],
-  extractedColors?: string[]
-) {
-  const items = [
-    pickByKeyword(wardrobe, "t-shirt", { name: "White T-Shirt", type: "top" }),
-    pickByKeyword(wardrobe, "cargo", { name: "Khaki Cargo Shorts", type: "bottom" }),
-    pickByKeyword(wardrobe, "boots", { name: "Brown Hiking Boots", type: "shoes" }),
-    pickByKeyword(wardrobe, "hat", { name: "Sun Hat", type: "accessory" }),
-    pickByKeyword(wardrobe, "wind", { name: "Windbreaker Jacket", type: "outer" }), // optional
-  ];
-
-  return {
-    palette: extractedColors?.length
-      ? extractedColors.slice(0, 5)
-      : ["#4682B4", "#B0E0E6", "#F5DEB3"], // ocean blue, seafoam, limestone beige
-    items,
-    why:
-      "Coastal wind along the cliffs — pack a light wind layer. UV peaks at midday, so a hat is essential. " +
-      "Palette follows ocean hues and limestone stacks.",
-  };
-}
-
-function guideGeneric(wardrobe: WardrobeItem[], extractedColors?: string[]) {
-  const items = [
-    pickByKeyword(wardrobe, "t-shirt", { name: "White T-Shirt", type: "top" }),
-    pickByKeyword(wardrobe, "jeans", { name: "Blue Jeans", type: "bottom" }),
-    pickByKeyword(wardrobe, "boots", { name: "Brown Hiking Boots", type: "shoes" }),
-    pickByKeyword(wardrobe, "hat", { name: "Sun Hat", type: "accessory" }),
-  ];
-
-  return {
-    palette: extractedColors?.length
-      ? extractedColors.slice(0, 5)
-      : ["#2E8B57", "#87CEEB", "#F4E8D2"], // green, sky, sand
-    items,
-    why:
-      "Balanced conditions — comfortable layers with nature-inspired tones. " +
-      "We prioritize items you already own for sustainability.",
-  };
-}
-
-export async function POST(request: NextRequest) {
+async function polishReasons(items: GuideItem[]) {
+  if (!process.env.OPENAI_API_KEY) return items;
   try {
-    const body = await request.json();
-
-    const destination: string = (body.destination || body.location || "").toLowerCase();
-    const activity: string = (body.activity || "Hiking") as string;
-    const seasonStyle: string = (body.seasonStyle || "Autumn Earth") as string;
-    const stylePref: string = (body.style || "Outdoor") as string;
-    const extractedColors: string[] | undefined = body.extractedColors;
-    const providedWardrobe: WardrobeItem[] = body.wardrobeItems || body.wardrobe || [];
-
-    // Use provided wardrobe or fall back to a demo set so the guide is always populated
-    const wardrobe = (providedWardrobe.length ? providedWardrobe : fallbackWardrobe()).map(
-      (w) => ({ ...w, name: w.name || "Item" })
-    );
-
-    // Choose a deterministic guide by destination keywords
-    let guide;
-    if (destination.includes("blue") && destination.includes("mountain")) {
-      guide = guideForBlueMountains(wardrobe, extractedColors);
-    } else if (destination.includes("sydney") || destination.includes("harbour") || destination.includes("opera")) {
-      guide = guideForSydneyHarbour(wardrobe, extractedColors);
-    } else if (destination.includes("great ocean") || destination.includes("apostles")) {
-      guide = guideForGreatOceanRoad(wardrobe, extractedColors);
-    } else {
-      guide = guideGeneric(wardrobe, extractedColors);
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    for (const item of items) {
+      const res = await client.chat.completions.create({
+        model: "gpt-3.5-turbo",
+        messages: [
+          {
+            role: "system",
+            content: "Rewrite outfit reasons to be concise and friendly.",
+          },
+          { role: "user", content: item.why },
+        ],
+        max_tokens: 60,
+      });
+      item.why = res.choices?.[0]?.message?.content?.trim() || item.why;
     }
+  } catch (e) {
+    // silently fail
+  }
+  return items;
+}
 
-    const response = {
-      success: true,
-      advice: {
-        destination: body.destination || body.location || "Your destination",
-        activity,
-        seasonStyle,
-        stylePref,
-        palette: guide.palette,
-        items: guide.items,
-        sustainability: { owned_ratio: 1.0, note: "All items selected from your wardrobe" },
-        why: guide.why,
-        generatedAt: new Date().toISOString(),
-      },
-    };
+function baseReason(
+  item: WardrobeItem,
+  input: FashionAdviceInput,
+  note: string
+): string {
+  const parts = [] as string[];
+  if (input.weather) {
+    if (input.weather.tempC >= 28) parts.push("keeps you cool in the heat");
+    else if (input.weather.tempC <= 15) parts.push("adds warmth in cool temps");
+    else parts.push("suits mild weather");
+    parts.push(input.weather.condition.toLowerCase());
+  }
+  parts.push(note);
+  if (input.palette && item.colors.length) {
+    parts.push("matches natural palette");
+  }
+  if (input.activity === "wildlife") {
+    parts.push("subtle tones help blend with surroundings");
+  }
+  return `${item.name}: ${parts.join(", ")}`;
+}
 
-    return NextResponse.json(response);
-  } catch (err) {
-    console.error("fashion-advice error:", err);
+function buildGuide(input: FashionAdviceInput): Guide {
+  const rule = activityNeeds[input.activity];
+  const items: GuideItem[] = [];
+  for (const type of rule.types) {
+    const chosen = pickByType(input.wardrobe, type, input.palette);
+    if (chosen) {
+      items.push({ ...chosen, why: baseReason(chosen, input, rule.note) });
+    }
+  }
+  return { items, palette: input.palette || [], notes: [] };
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = (await req.json()) as FashionAdviceInput;
+    const guide = buildGuide(body);
+    await polishReasons(guide.items);
+    return NextResponse.json({ success: true, guide });
+  } catch (e) {
     return NextResponse.json(
       { success: false, error: "Failed to generate advice" },
       { status: 500 }
