@@ -1,49 +1,63 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server";
 
-export async function POST(request: NextRequest) {
-  try {
-    const { imageData } = await request.json()
+export const runtime = "nodejs";
 
-    if (!imageData) {
-      return NextResponse.json({ error: "Image data is required" }, { status: 400 })
-    }
-
-    // For now, we'll use a simple color extraction algorithm
-    // In production, you might want to use a more sophisticated service
-    const extractedColors = await extractColorsFromBase64(imageData)
-
-    return NextResponse.json({
-      success: true,
-      colors: extractedColors,
-    })
-  } catch (error) {
-    console.error("Color extraction failed:", error)
-
-    // Return some default nature-inspired colors as fallback
-    const fallbackColors = ["#E6B800", "#8B4513", "#228B22", "#87CEEB"]
-
-    return NextResponse.json({
-      success: false,
-      colors: fallbackColors,
-      error: "Color extraction service temporarily unavailable",
-    })
-  }
+function rgbToHex(r: number, g: number, b: number) {
+  return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-async function extractColorsFromBase64(base64Data: string): Promise<string[]> {
-  // This is a simplified color extraction
-  // In a real implementation, you'd use image processing libraries
-  // or services like Google Vision API, AWS Rekognition, etc.
+function hexToRgb(hex: string) {
+  const bigint = parseInt(hex.replace("#", ""), 16);
+  const r = (bigint >> 16) & 255;
+  const g = (bigint >> 8) & 255;
+  const b = bigint & 255;
+  return { r, g, b };
+}
 
-  // For demo purposes, return some realistic color combinations
-  const colorPalettes = [
-    ["#FF6B35", "#F7931E", "#FFD23F", "#06FFA5"], // Sunset colors
-    ["#2E8B57", "#228B22", "#32CD32", "#90EE90"], // Forest greens
-    ["#4682B4", "#87CEEB", "#B0E0E6", "#F0F8FF"], // Ocean blues
-    ["#D2691E", "#CD853F", "#DEB887", "#F5DEB3"], // Desert earth tones
-    ["#DC143C", "#FF6347", "#FF7F50", "#FFA07A"], // Outback reds
-  ]
+function brightness({ r, g, b }: { r: number; g: number; b: number }) {
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
 
-  // Return a random palette (in production, this would analyze the actual image)
-  return colorPalettes[Math.floor(Math.random() * colorPalettes.length)]
+export async function POST(req: NextRequest) {
+  try {
+    const contentType = req.headers.get("content-type") || "";
+    let buffer: Buffer;
+
+    if (contentType.includes("multipart/form-data")) {
+      const formData = await req.formData();
+      const file = formData.get("file") as File | null;
+      if (!file) {
+        return NextResponse.json({ success: false, error: "Image file required" }, { status: 400 });
+      }
+      buffer = Buffer.from(await file.arrayBuffer());
+    } else {
+      const { imageUrl } = await req.json();
+      if (!imageUrl) {
+        return NextResponse.json({ success: false, error: "imageUrl is required" }, { status: 400 });
+      }
+      const res = await fetch(imageUrl);
+      buffer = Buffer.from(await res.arrayBuffer());
+    }
+
+    const sharp = (await import("sharp")).default;
+    buffer = await sharp(buffer).resize({ width: 300 }).toBuffer();
+
+    // @ts-ignore - no type definitions for color-thief-node
+    const { getPalette } = await import("color-thief-node");
+    const palette = (await getPalette(buffer, 6)) as number[][];
+    let colors = palette.map((rgb: number[]) => rgbToHex(rgb[0], rgb[1], rgb[2]));
+
+    colors = colors
+      .filter((c: string) => {
+        const l = brightness(hexToRgb(c));
+        return l > 40 && l < 220;
+      })
+      .filter((c: string, idx: number, arr: string[]) => arr.indexOf(c) === idx)
+      .slice(0, 4);
+
+    return NextResponse.json({ success: true, colors });
+  } catch (e) {
+    const fallback = ["#87CEEB", "#F5DEB3", "#2E8B57", "#8B4513"];
+    return NextResponse.json({ success: false, colors: fallback });
+  }
 }

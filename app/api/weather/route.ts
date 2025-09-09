@@ -1,59 +1,63 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { NextResponse } from "next/server";
 
-export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url)
-  const location = searchParams.get("location")
+export const runtime = "nodejs";
 
-  if (!location) {
-    return NextResponse.json({ error: "Location is required" }, { status: 400 })
-  }
-
+export async function POST(req: Request) {
   try {
-    // Using OpenWeatherMap API - you can replace with your preferred weather service
-    const apiKey = process.env.OPENWEATHER_API_KEY
+    const { city, lat, lon } = await req.json();
+    const apiKey = process.env.WEATHER_API_KEY;
 
     if (!apiKey) {
-      // Fallback to mock data if no API key
-      const mockWeatherData = {
-        main: {
-          temp: Math.round(15 + Math.random() * 20),
-          feels_like: Math.round(15 + Math.random() * 20),
-          humidity: Math.round(40 + Math.random() * 40),
-        },
-        weather: [
-          {
-            main: ["Sunny", "Cloudy", "Partly Cloudy"][Math.floor(Math.random() * 3)],
-            description: "clear sky",
-          },
-        ],
-        wind: { speed: Math.round(Math.random() * 15) },
-        name: location,
-      }
-
-      return NextResponse.json(mockWeatherData)
+      return NextResponse.json({
+        success: false,
+        mock: true,
+        weather: { tempC: 24, condition: "Sunny" },
+        error: "Missing WEATHER_API_KEY",
+      });
     }
 
-    const response = await fetch(
-      `https://api.openweathermap.org/data/2.5/weather?q=${location},AU&appid=${apiKey}&units=metric`,
-    )
-
-    if (!response.ok) {
-      throw new Error("Weather API request failed")
+    let url = "";
+    if (lat && lon) {
+      url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`;
+    } else if (city) {
+      url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${apiKey}&units=metric`;
+    } else {
+      return NextResponse.json(
+        { success: false, error: "city or lat/lon required" },
+        { status: 400 }
+      );
     }
 
-    const weatherData = await response.json()
-    return NextResponse.json(weatherData)
-  } catch (error) {
-    console.error("Weather fetch failed:", error)
+    const res = await fetch(url);
+    const data = await res.json();
 
-    // Return mock data as fallback
-    const fallbackWeather = {
-      main: { temp: 22, feels_like: 24, humidity: 65 },
-      weather: [{ main: "Sunny", description: "clear sky" }],
-      wind: { speed: 8 },
-      name: location,
+    if (data.cod !== 200) {
+      return NextResponse.json(
+        { success: false, error: "Weather API error", details: data },
+        { status: 500 }
+      );
     }
 
-    return NextResponse.json(fallbackWeather)
+    return NextResponse.json({
+      success: true,
+      weather: {
+        tempC: data.main.temp,
+        condition: data.weather?.[0]?.description,
+        windKph: data.wind?.speed ? data.wind.speed * 3.6 : undefined,
+        uv: data?.uv || null,
+      },
+    });
+  } catch (e) {
+    console.error(e);
+    return NextResponse.json(
+      {
+        success: false,
+        mock: true,
+        weather: { tempC: 23, condition: "Sunny" },
+        error: "Internal server error",
+      },
+      { status: 500 }
+    );
   }
 }
+
